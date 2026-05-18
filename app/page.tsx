@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   EINVOICE_FIELDS,
   HSN_COLUMNS,
@@ -24,17 +24,56 @@ function display(value: string | number | null | undefined): string {
   return String(value);
 }
 
+function formatMs(ms: number): string {
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const min = Math.floor(s / 60);
+  const rem = Math.round(s - min * 60);
+  return `${min}m ${rem}s`;
+}
+
 export default function HomePage() {
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [invoice, setInvoice] = useState<Invoice | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [elapsedMs, setElapsedMs] = useState<number | null>(null);
+  const startRef = useRef<number | null>(null);
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (tickRef.current) clearInterval(tickRef.current);
+    };
+  }, []);
+
+  function startTimer() {
+    startRef.current = Date.now();
+    setElapsedMs(0);
+    tickRef.current = setInterval(() => {
+      if (startRef.current !== null) {
+        setElapsedMs(Date.now() - startRef.current);
+      }
+    }, 100);
+  }
+
+  function stopTimer() {
+    if (tickRef.current) {
+      clearInterval(tickRef.current);
+      tickRef.current = null;
+    }
+    if (startRef.current !== null) {
+      setElapsedMs(Date.now() - startRef.current);
+      startRef.current = null;
+    }
+  }
 
   async function handleExtract() {
     if (!file) return;
     setLoading(true);
     setError(null);
     setInvoice(null);
+    startTimer();
     try {
       const form = new FormData();
       form.append("file", file);
@@ -62,6 +101,7 @@ export default function HomePage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Request failed");
     } finally {
+      stopTimer();
       setLoading(false);
     }
   }
@@ -108,12 +148,20 @@ export default function HomePage() {
               setFile(e.target.files?.[0] || null);
               setInvoice(null);
               setError(null);
+              setElapsedMs(null);
             }}
           />
           <button onClick={handleExtract} disabled={!file || loading}>
             {loading && <span className="spinner" />}
-            {loading ? "Extracting…" : "Extract"}
+            {loading
+              ? `Extracting… ${elapsedMs !== null ? formatMs(elapsedMs) : ""}`
+              : "Extract"}
           </button>
+          {!loading && elapsedMs !== null && (invoice || error) && (
+            <span className="muted" style={{ fontSize: 13 }}>
+              {invoice ? "✓ Extracted in" : "Failed after"} {formatMs(elapsedMs)}
+            </span>
+          )}
           {invoice && (
             <button className="secondary" onClick={handleDownload}>
               Download Excel
