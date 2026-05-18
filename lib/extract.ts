@@ -232,30 +232,60 @@ async function callWithRetry<T>(label: string, fn: () => Promise<T>): Promise<T>
   throw lastErr;
 }
 
+function buildModelChain(primary: string): string[] {
+  // Try the primary first; on sustained 5xx/429, fall back to less-busy models.
+  // gemini-2.5-flash-lite has the most spare capacity; gemini-2.5-pro is the
+  // last resort (slower, but very rarely overloaded).
+  const chain = [primary];
+  for (const candidate of ["gemini-2.5-flash-lite", "gemini-2.5-pro", "gemini-2.5-flash"]) {
+    if (!chain.includes(candidate)) chain.push(candidate);
+  }
+  return chain;
+}
+
 export async function extractInvoice(pdfBuffer: Buffer): Promise<Invoice> {
   const genai = getClient();
-  const modelId = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-  const model = genai.getGenerativeModel({
-    model: modelId,
-    generationConfig: {
-      responseMimeType: "application/json",
-      temperature: 0,
-    },
-  });
+  const primary = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  const modelChain = buildModelChain(primary);
 
-  const t0 = Date.now();
-  const result = await callWithRetry("generateContent", () =>
-    model.generateContent([
-      {
-        inlineData: {
-          mimeType: "application/pdf",
-          data: pdfBuffer.toString("base64"),
-        },
+  const pdfPart = {
+    inlineData: {
+      mimeType: "application/pdf" as const,
+      data: pdfBuffer.toString("base64"),
+    },
+  };
+
+  let result: Awaited<ReturnType<ReturnType<typeof genai.getGenerativeModel>["generateContent"]>> | null = null;
+  let modelUsed = primary;
+  let lastErr: unknown;
+
+  for (const modelId of modelChain) {
+    const model = genai.getGenerativeModel({
+      model: modelId,
+      generationConfig: {
+        responseMimeType: "application/json",
+        temperature: 0,
       },
-      { text: SYSTEM_PROMPT },
-    ]),
-  );
-  const ms = Date.now() - t0;
+    });
+    const t0 = Date.now();
+    try {
+      result = await callWithRetry(`generateContent[${modelId}]`, () =>
+        model.generateContent([pdfPart, { text: SYSTEM_PROMPT }]),
+      );
+      modelUsed = modelId;
+      console.log(`[/api/extract] succeeded on ${modelId} in ${Date.now() - t0}ms`);
+      break;
+    } catch (err) {
+      lastErr = err;
+      const status = (err as { status?: number })?.status;
+      if (!status || !RETRYABLE_STATUSES.has(status)) throw err;
+      console.log(`[/api/extract] ${modelId} unavailable after retries (status=${status}), trying next model in chain...`);
+    }
+  }
+
+  if (!result) {
+    throw lastErr ?? new Error("All Gemini models in the fallback chain failed.");
+  }
 
   const raw = result.response.text();
   if (!raw) {
@@ -273,7 +303,7 @@ export async function extractInvoice(pdfBuffer: Buffer): Promise<Invoice> {
 
   const usage = result.response.usageMetadata;
   console.log(
-    `[/api/extract] model=${modelId} ms=${ms} ` +
+    `[/api/extract] model=${modelUsed} (primary=${primary}) ` +
       `prompt_tokens=${usage?.promptTokenCount ?? "?"} ` +
       `output_tokens=${usage?.candidatesTokenCount ?? "?"} ` +
       `columns=${invoice.lineItemColumns.length} ` +
