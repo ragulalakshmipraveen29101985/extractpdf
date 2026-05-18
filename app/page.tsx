@@ -40,7 +40,21 @@ export default function HomePage() {
       const form = new FormData();
       form.append("file", file);
       const res = await fetch("/api/extract", { method: "POST", body: form });
-      const data = (await res.json()) as ExtractResponse;
+      const text = await res.text();
+      let data: ExtractResponse;
+      try {
+        data = JSON.parse(text) as ExtractResponse;
+      } catch {
+        // Server didn't return JSON — typically a Vercel function timeout (504)
+        // or a runtime crash. Surface a useful message instead of a parse error.
+        if (res.status === 504 || /timeout/i.test(text)) {
+          throw new Error(
+            `Server timed out (status ${res.status}). ` +
+              `Gemini may be overloaded — try again in 30 s, or try a smaller invoice.`,
+          );
+        }
+        throw new Error(`Server returned non-JSON response (status ${res.status}): ${text.slice(0, 200)}`);
+      }
       if (!data.ok) {
         setError(data.error);
       } else {

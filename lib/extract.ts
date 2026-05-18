@@ -212,26 +212,6 @@ function normalizeInvoice(raw: unknown): Invoice {
 
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 
-async function callWithRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
-  const delaysMs = [1500, 4000]; // up to 2 retries; total worst-case wait ≈ 5.5 s
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      const status = (err as { status?: number })?.status;
-      if (!status || !RETRYABLE_STATUSES.has(status) || attempt === delaysMs.length) {
-        throw err;
-      }
-      const wait = delaysMs[attempt];
-      console.log(`[/api/extract] ${label} status=${status}, retrying in ${wait}ms (attempt ${attempt + 1}/${delaysMs.length})`);
-      await new Promise((r) => setTimeout(r, wait));
-    }
-  }
-  throw lastErr;
-}
-
 function buildModelChain(primary: string): string[] {
   // Try the primary first; on sustained 5xx/429, fall back to less-busy models.
   // gemini-2.5-flash-lite has the most spare capacity; gemini-2.5-pro is the
@@ -269,9 +249,7 @@ export async function extractInvoice(pdfBuffer: Buffer): Promise<Invoice> {
     });
     const t0 = Date.now();
     try {
-      result = await callWithRetry(`generateContent[${modelId}]`, () =>
-        model.generateContent([pdfPart, { text: SYSTEM_PROMPT }]),
-      );
+      result = await model.generateContent([pdfPart, { text: SYSTEM_PROMPT }]);
       modelUsed = modelId;
       console.log(`[/api/extract] succeeded on ${modelId} in ${Date.now() - t0}ms`);
       break;
@@ -279,7 +257,7 @@ export async function extractInvoice(pdfBuffer: Buffer): Promise<Invoice> {
       lastErr = err;
       const status = (err as { status?: number })?.status;
       if (!status || !RETRYABLE_STATUSES.has(status)) throw err;
-      console.log(`[/api/extract] ${modelId} unavailable after retries (status=${status}), trying next model in chain...`);
+      console.log(`[/api/extract] ${modelId} unavailable (status=${status}), trying next model in chain...`);
     }
   }
 
