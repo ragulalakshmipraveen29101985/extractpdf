@@ -210,9 +210,31 @@ function normalizeInvoice(raw: unknown): Invoice {
 
 // ---------- main entry point ----------
 
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+
+async function callWithRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  const delaysMs = [1500, 4000]; // up to 2 retries; total worst-case wait ≈ 5.5 s
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      const status = (err as { status?: number })?.status;
+      if (!status || !RETRYABLE_STATUSES.has(status) || attempt === delaysMs.length) {
+        throw err;
+      }
+      const wait = delaysMs[attempt];
+      console.log(`[/api/extract] ${label} status=${status}, retrying in ${wait}ms (attempt ${attempt + 1}/${delaysMs.length})`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+  throw lastErr;
+}
+
 export async function extractInvoice(pdfBuffer: Buffer): Promise<Invoice> {
   const genai = getClient();
-  const modelId = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+  const modelId = process.env.GEMINI_MODEL || "gemini-2.5-flash";
   const model = genai.getGenerativeModel({
     model: modelId,
     generationConfig: {
@@ -222,15 +244,17 @@ export async function extractInvoice(pdfBuffer: Buffer): Promise<Invoice> {
   });
 
   const t0 = Date.now();
-  const result = await model.generateContent([
-    {
-      inlineData: {
-        mimeType: "application/pdf",
-        data: pdfBuffer.toString("base64"),
+  const result = await callWithRetry("generateContent", () =>
+    model.generateContent([
+      {
+        inlineData: {
+          mimeType: "application/pdf",
+          data: pdfBuffer.toString("base64"),
+        },
       },
-    },
-    { text: SYSTEM_PROMPT },
-  ]);
+      { text: SYSTEM_PROMPT },
+    ]),
+  );
   const ms = Date.now() - t0;
 
   const raw = result.response.text();
