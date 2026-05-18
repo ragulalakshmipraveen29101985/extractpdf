@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { downloadWorkbook } from "@/lib/excel";
 import {
   EINVOICE_FIELDS,
   HSN_COLUMNS,
@@ -69,8 +68,26 @@ export default function HomePage() {
 
   function handleDownload() {
     if (!invoice) return;
-    const fallback = file?.name.replace(/\.pdf$/i, "") || "invoice";
-    downloadWorkbook(invoice, fallback);
+    // Build the XLSX on the server and let the browser handle the download
+    // natively via Content-Disposition. A form-POST is much more reliable
+    // across browsers than a blob URL + a.click() — iOS Safari and in-app
+    // webviews (WhatsApp, Instagram, etc.) routinely break the JS-driven
+    // approach but always respect a real navigation with attachment headers.
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = "/api/download";
+    form.target = "_self";
+    form.style.display = "none";
+
+    const field = document.createElement("input");
+    field.type = "hidden";
+    field.name = "invoice";
+    field.value = JSON.stringify(invoice);
+    form.appendChild(field);
+
+    document.body.appendChild(form);
+    form.submit();
+    document.body.removeChild(form);
   }
 
   return (

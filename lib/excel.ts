@@ -99,33 +99,24 @@ function buildHsnSheet(inv: Invoice): XLSX.WorkSheet {
   return sheet;
 }
 
-export function buildWorkbook(inv: Invoice): Blob {
+// Returns the XLSX bytes. Works in both Node (server) and browser; the caller
+// decides how to ship them — as a streamed `Content-Disposition: attachment`
+// response (server) or wrapped in a Blob (browser).
+export function buildXlsxBytes(inv: Invoice): Uint8Array {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, buildHeaderSheet(inv), "Header");
   XLSX.utils.book_append_sheet(wb, buildLineItemsSheet(inv), "Line Items");
   XLSX.utils.book_append_sheet(wb, buildHsnSheet(inv), "HSN Tax Summary");
-
-  const arrayBuffer = XLSX.write(wb, { type: "array", bookType: "xlsx" });
-  return new Blob([arrayBuffer], {
-    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  });
+  return XLSX.write(wb, { type: "array", bookType: "xlsx" }) as Uint8Array;
 }
 
-function sanitizeFilename(s: string): string {
+export function sanitizeFilename(s: string): string {
   return s.replace(/[\\/:*?"<>|]+/g, "_").replace(/\s+/g, "_");
 }
 
-export function downloadWorkbook(inv: Invoice, fallback = "invoice"): void {
+export function xlsxFilename(inv: Invoice, fallback = "invoice"): string {
   const base = inv.invoiceNumber
     ? sanitizeFilename(inv.invoiceNumber)
     : sanitizeFilename(fallback);
-  const blob = buildWorkbook(inv);
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${base}.xlsx`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  return `${base}.xlsx`;
 }
